@@ -1,0 +1,32 @@
+{
+	"admin/status/gim": {
+		"title": "Geo Ip Map Log",
+		"order": 5,
+		"action": {
+			"type": "firstchild"
+		},
+		"depends": {
+			"acl": [ "luci-app-gim" ]
+		}
+	},
+
+	"admin/status/gim/dashboard": {
+		"title": "Dashboard",
+		"order": 1,
+		"action": {
+			"type": "template",
+			"path": "gim"
+		}
+	},
+
+	"admin/status/gim/getts/*": {
+		"order": 3,
+		"action": {
+			"type": "function",
+			"module": "luci.controller.gim",
+			"function": "action_getts"
+		}
+	}
+
+
+}

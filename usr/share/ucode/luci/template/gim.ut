@@ -1,0 +1,200 @@
+{%  include('header', {}) -%}
+
+	<script type="text/javascript">//<![CDATA[
+	var Luci = L;
+	//]]></script>
+
+	<link rel="stylesheet" integrity="sha384-o/2yZuJZWGJ4s/adjxVW71R+EO/LyCwdQfP5UWSgX/w87iiTXuvDZaejd3TsN7mf" crossorigin="anonymous" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.3/leaflet.css" />
+	<link rel="stylesheet" integrity="sha384-NyCa0nBOjmCqS9HwLKpE7yqy2HVG6PN/cDyAAIdPijDlUH6jCfqX6ydzXFTA/L/l" crossorigin="anonymous" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.Default.min.css" />
+
+	<script integrity="sha384-okbbMvvx/qfQkmiQKfd5VifbKZ/W8p1qIsWvE1ROPUfHWsDcC8/BnHohF7vPg2T6" crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.3/leaflet.js"></script>
+	<script integrity="sha384-eXVCORTRlv4FUUgS/xmOyr66XBVraen8ATNLMESp92FKXLAMiKkerixTiBvXriZr" crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/leaflet.markercluster.js"></script>
+	<script integrity="sha384-c1aAsSPuTg7IybBHA8KbsqNyijjJCAMtN/nHf12//+LzH8hlDyOqxbF9kFDuM7Ou" crossorigin="anonymous" src="https://unpkg.com/leaflet.featuregroup.subgroup@1.0.2/dist/leaflet.featuregroup.subgroup.js"></script>
+
+	<div id="map" class="map" style="height: 400px" tabindex="0"></div>
+
+	<a href="https://db-ip.com/db/download/ip-to-city-lite" target="_blank">Download csv DB</a>
+	<input type="file" onchange="load_ts()" id="geo_db_input" title="any csv',' db composed of lines with: First IP in the block, Last IP in the block, .... , Decimal latitude, Decimal longitude">
+
+	<input type="datetime-local" id="tsb" value="2023-06-01T00:00" onchange="load_ts()">
+	<input type="datetime-local" id="tse" value="2023-12-31T23:59" onchange="load_ts()">
+
+	<table id="table" width="100%" border="1" style="text-align:left">
+	  <tr>
+	    <th>Local IP</th>
+	    <th>Local Mac</th>
+	    <th>Dests Count</th>
+	    <th>Packets Up</th>
+	    <th>Bytes Up</th>
+	    <th>Packets Down</th>
+	    <th>Bytes Down</th>
+	  </tr>
+
+
+	</table>
+
+    <script type="text/javascript">//<![CDATA[
+var LF = L;
+
+var table = document.getElementById('table');
+
+const map = LF.map("map").setView([0, 0], 1); // [lat, lng], zoom
+
+LF.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors', }).addTo(map);
+// TODO: pick a random tile server from a list
+
+let cluster = LF.markerClusterGroup() ;  // create cluster layer
+
+
+
+
+function ip2int(ip){ // converts ipv4 or ipv6 to bigint
+	if( ip.indexOf(":") < 0 ){ 
+		return ip.split`.`.reduce(function(int, value) { return BigInt(int)*BigInt(256) + BigInt(+value) });
+	} else {
+		let len = 10-ip.split(':').length;
+		return ip.replace('::', ':'.repeat(len)).split(':').map( str => Number('0x0'+str)).reduce( function(int, value) { return BigInt(int)*BigInt(65536) + BigInt(+value) });
+	}
+}
+
+const fr_read_promisse = (blob) => { // file reader sync code, used to read geo_ip_db stored on hard drive
+	let fr = new FileReader();
+	return new Promise((resolve) => {
+		fr.onload = () => { resolve(fr.result); };
+		fr.readAsText(blob);
+	});
+};
+
+async function update_marker (dest, ip, subl) { // binary search 'ip' inside geo_ip_db file, then update marker on DOM
+
+	const file = document.getElementById('geo_db_input').files[0];
+	if( file === undefined ){ return; }
+	if( dest.circlemarker === undefined ){
+		let latlon = [-77,0];
+		let ipn = ip2int(ip);
+		let start = 0;
+		let end = file.size;
+		for(;start < end;){
+			let middle = Math.floor( ( end + start ) / 2 );
+			const buffer = await fr_read_promisse( file.slice( Math.max(0, middle - 128), middle + 128 ) );
+			let regs = buffer.slice( buffer.lastIndexOf('\n', 127)+1, buffer.indexOf('\n',128) ).split(',');
+
+			if( ipn > ip2int(regs[1]) ){
+				start = middle;
+			} else {
+				if( ipn < ip2int(regs[0]) ){
+					end = middle;
+				} else {
+					latlon = [ parseFloat(regs[regs.length-2]), parseFloat(regs[regs.length-1]) ];
+					break;
+				}
+			}
+		}
+		dest.circlemarker = LF.circleMarker( latlon );
+		dest.circlemarker.bindTooltip(ip + " <> ip, proto, reverse dns, bytes histogram </>") // TODO: js function that creates histogram
+		subl.addLayer(dest.circlemarker);
+	}
+	dest.circlemarker.radius = Math.round(dest.total**0.16)+5;
+	// outer_radius = uploadbytes
+}
+
+function update_dom(){ // update dom and calls async update_markeri for each dest_ip
+
+	cluster.remove();
+	for( i = 0; i < db.length; i++ ){
+
+		// create new local ip source
+		if( db[i].sublayer === undefined ){
+			db[i].sublayer = LF.featureGroup.subGroup(cluster);
+			db[i].dom_td = table.insertRow(-1);
+			db[i].dom_td.innerHTML = "<td> <input type='checkbox' checked >x</input></td>"
+		} else {
+			db[i].sublayer.remove();
+		}
+
+		// include destination 
+		let dests = Object.keys(db[i].dest);
+		for( k = 0; k < dests.length; k++ ){
+			let dest = db[i].dest[dests[k]];
+			dest.begin = 0; 					// TODO: find begin
+			dest.end = dest.length-1;				// TODO: find end
+			dest.total = 0;
+			for( j = dest.begin; j <= dest.end; j++ ) { dest.total += dest[j].down_bytes }
+			update_marker( dest, dests[k], db[i].sublayer );
+		}
+
+		// update local source table
+		let checked = db[i].dom_td.getElementsByTagName('input')[0].checked;
+		db[i].dom_td.innerHTML  = "<td> <input type='checkbox' onclick='javascript:this.checked?this.sublayer.addTo(map):this.sublayer.remove()' "+ (checked?"checked":"") +" >"
+					+db[i].ip+"</input></td><td>"
+					+db[i].mac+"</td><td>"+dests.length+"</td><td>4</td><td>5</td><td>6</td><td>i"+"</td>";
+		db[i].dom_td.getElementsByTagName('input')[0].sublayer = db[i].sublayer;
+		if(checked){ db[i].sublayer.addTo(map); }
+	}
+	cluster.addTo(map);
+}
+
+var db = []; // {ip, mac, sublayer_obj, dest[ip]{circlemarker_obj, total, logs:[ts, up/dn packets/bytes ]  }
+
+function xhr2db_push   (ev, xhr){ xhr2db(ev, xhr, "push"); }	// callback functions that insert/append router reponse to browser db. Response ex:
+function xhr2db_unshift(ev, xhr){ xhr2db(ev, xhr, "unshift"); } // [ "192.168.0.8", ["ts 168015100", "8.8.8.8 1 120 2 250", "9.9.9.9 ....", "ts 168015160", .... ], "192.168.1.9", [...]
+function xhr2db(ev, xhr, push_unshift){				// [ "local_ip_mac", [ "ts int", "dest_ip up ub dp db", ... ], ... ]
+	xhr = xhr.data;
+	if(xhr === undefined) return;
+	for( i = 0; i < xhr.length; i++ ){
+
+		let ip = xhr[i].split("__")[0].replaceAll("_",".");
+		pos = db.findIndex( (a)=>a.ip == ip ); // get local ip index (array find)
+		if( pos < 0 ){ 
+			pos = db.length;
+			db[pos] = {}
+			db[pos].ip = ip;
+			db[pos].mac = xhr[i].split("__")[1].replaceAll("_",":");
+			db[pos].dest = {};
+		}
+
+		let ts = 0;
+		i++;
+		logs = xhr[i];
+		for( j = 0; j < logs.length; j++ ){
+			if( logs[j].slice(0,2) == "ts" ){
+				ts = parseInt(logs[j].slice(3), 10);
+			} else {
+				let log = logs[j].split(" ");
+				if( log.length < 5 ) continue;
+				let dest = log[0];
+				if( db[pos].dest[dest] === undefined ) { db[pos].dest[dest] = []; }
+				db[pos].dest[dest][ push_unshift ]( { "ts":ts, "up_packets":parseInt(log[1], 10), "up_bytes":parseInt(log[2], 10), "down_packets":parseInt(log[3], 10), "down_bytes":parseInt(log[4], 10) } );
+			}
+		}
+	}
+	update_dom();
+}
+
+
+function load_ts(){  //  gets missing db data 
+L = LF;
+	if( document.getElementById('tsb').value == "" || document.getElementById('tse').value == "" ) return;
+
+	let begin = Date.parse(document.getElementById('tsb').value)/1000;  
+	let end   = Date.parse(document.getElementById('tse').value)/1000;
+
+	if( db.begin === undefined || db.end === undefined ) db.begin = db.end = end;
+
+	if( begin < db.begin ) {
+		stxhr.get( '/cgi-bin/luci/admin/status/gim/getts/' + begin + '-' + end, null, xhr2db_unshift );
+		db.begin = begin;
+	}
+	
+	if( end > db.end ) { 
+		stxhr.get( '/cgi-bin/luci/admin/status/gim/getts/' + begin + '-' + end, null, xhr2db_push );
+		db.end = end;
+	}
+}
+
+L = Luci;
+var stxhr = new XHR();
+
+//]]></script>
+
+{% include('footer') %}
